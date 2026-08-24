@@ -14,6 +14,7 @@ Standard library only. Python 3.9+. No pip install needed.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -70,8 +71,11 @@ def load_config() -> dict:
     for key in ("user_id", "apikey"):
         if not spawn.get(key):
             sys.exit(f"config.json: spawn.{key} is required (see README step 2)")
-    if not spawn.get("access_token") and not spawn.get("refresh_token"):
-        sys.exit("config.json: spawn needs an access_token, a refresh_token, or both")
+    if not any(spawn.get(k) for k in ("session_cookie", "access_token", "refresh_token")):
+        sys.exit(
+            "config.json: spawn needs a session_cookie (easiest - see README step 2), "
+            "or an access_token / refresh_token pair"
+        )
     return cfg
 
 
@@ -119,6 +123,59 @@ def dig(obj: Any, path: str, default: Any = None) -> Any:
     return cur
 
 
+def parse_session_cookie(raw: str) -> tuple:
+    """
+    Pull (access_token, refresh_token) out of a Supabase auth cookie.
+
+    Spawn uses @supabase/ssr, which keeps the session in a cookie rather than
+    local storage. Those cookies are URL-encoded, usually prefixed 'base64-',
+    and split into numbered chunks when they outgrow the 4KB cookie limit.
+    Users paste the raw value(s) and we deal with the wrapping here.
+    """
+    if not raw:
+        return "", ""
+
+    # Chunks get pasted one after another, often with a stray newline between
+    # them. Cookie values can't contain whitespace anyway, so drop all of it.
+    value = "".join(raw.split()).strip('"')
+    value = urllib.parse.unquote(value)
+
+    # Chunked cookies are just concatenated; strip a prefix on each piece.
+    if value.count("base64-") > 1:
+        value = "".join(part for part in value.split("base64-") if part)
+        value = "base64-" + value
+
+    if value.startswith("base64-"):
+        encoded = value[len("base64-"):]
+        try:
+            value = base64.b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as e:
+            raise ValueError(
+                "Could not decode the session cookie. It is normally split into "
+                "numbered chunks (.0, .1, ...) - paste every chunk, in order, "
+                f"joined into one string. ({e})"
+            )
+
+    try:
+        data = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            "Session cookie didn't contain readable JSON. If the cookie was split "
+            f"into numbered chunks, paste all of them joined together. ({e})"
+        )
+
+    if isinstance(data, list) and data:
+        data = data[0]
+    if not isinstance(data, dict):
+        raise ValueError("Session cookie JSON wasn't an object")
+
+    access = data.get("access_token", "")
+    refresh = data.get("refresh_token", "")
+    if not access and not refresh:
+        raise ValueError("Session cookie had no access_token or refresh_token in it")
+    return access, refresh
+
+
 def http_json(url, *, headers, method="GET", body=None, timeout=20):
     req = urllib.request.Request(url, data=body, method=method)
     for k, v in headers.items():
@@ -161,8 +218,17 @@ class SpawnClient:
         self.user_id = spawn_cfg["user_id"]
         self.table = spawn_cfg.get("table", "notifications")
         self.access_token = spawn_cfg.get("access_token", "")
-        # A rotated token in state beats the one originally pasted into config.
-        self.refresh_token = state.get("refresh_token") or spawn_cfg.get("refresh_token", "")
+        config_refresh = spawn_cfg.get("refresh_token", "")
+
+        # Easiest setup path: paste the raw sb-*-auth-token cookie and let us
+        # unwrap it, rather than making people decode base64 by hand.
+        if spawn_cfg.get("session_cookie"):
+            cookie_access, cookie_refresh = parse_session_cookie(spawn_cfg["session_cookie"])
+            self.access_token = self.access_token or cookie_access
+            config_refresh = config_refresh or cookie_refresh
+
+        # A rotated token in state beats whatever was originally pasted in.
+        self.refresh_token = state.get("refresh_token") or config_refresh
 
     # -- auth ------------------------------------------------------------
 

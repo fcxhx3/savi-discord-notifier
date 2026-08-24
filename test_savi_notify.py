@@ -4,9 +4,11 @@ Tests for the notification forwarding logic - stdlib unittest, no network.
 Run:  python -m unittest -v
 """
 
+import base64
 import json
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -211,6 +213,63 @@ class UrlTests(unittest.TestCase):
     def test_skip_archived_can_be_turned_off(self):
         spawn = dict(cfg()["spawn"], skip_archived=False)
         self.assertNotIn("neq.archived", sn.SpawnClient(spawn, {})._notifications_url())
+
+
+class SessionCookieTests(unittest.TestCase):
+    """Spawn stores the session in a chunked, base64-wrapped cookie."""
+
+    SESSION = {"access_token": "at-abc", "refresh_token": "rt-xyz",
+               "user": {"id": "u-1"}}
+
+    def cookie(self):
+        blob = base64.b64encode(json.dumps(self.SESSION).encode()).decode()
+        return "base64-" + blob
+
+    def test_single_chunk(self):
+        self.assertEqual(sn.parse_session_cookie(self.cookie()), ("at-abc", "rt-xyz"))
+
+    def test_two_chunks_pasted_together(self):
+        whole = self.cookie()
+        half = len(whole) // 2
+        pasted = whole[:half] + "\n" + whole[half:]   # as copied from .0 and .1
+        self.assertEqual(sn.parse_session_cookie(pasted), ("at-abc", "rt-xyz"))
+
+    def test_url_encoded_value(self):
+        encoded = urllib.parse.quote(self.cookie())
+        self.assertEqual(sn.parse_session_cookie(encoded), ("at-abc", "rt-xyz"))
+
+    def test_plain_json_cookie(self):
+        self.assertEqual(sn.parse_session_cookie(json.dumps(self.SESSION)),
+                         ("at-abc", "rt-xyz"))
+
+    def test_list_wrapped_session(self):
+        blob = base64.b64encode(json.dumps([self.SESSION]).encode()).decode()
+        self.assertEqual(sn.parse_session_cookie("base64-" + blob), ("at-abc", "rt-xyz"))
+
+    def test_empty_is_empty(self):
+        self.assertEqual(sn.parse_session_cookie(""), ("", ""))
+
+    def test_truncated_paste_explains_itself(self):
+        """Pasting only chunk .0 is the obvious mistake - say so."""
+        with self.assertRaises(ValueError) as ctx:
+            sn.parse_session_cookie(self.cookie()[:40])
+        self.assertIn("chunks", str(ctx.exception).lower())
+
+    def test_session_without_tokens_is_rejected(self):
+        blob = base64.b64encode(json.dumps({"user": {"id": "u-1"}}).encode()).decode()
+        with self.assertRaises(ValueError):
+            sn.parse_session_cookie("base64-" + blob)
+
+    def test_client_reads_tokens_from_cookie(self):
+        spawn = dict(cfg()["spawn"], access_token="", session_cookie=self.cookie())
+        client = sn.SpawnClient(spawn, {})
+        self.assertEqual(client.access_token, "at-abc")
+        self.assertEqual(client.refresh_token, "rt-xyz")
+
+    def test_rotated_state_token_still_wins_over_cookie(self):
+        spawn = dict(cfg()["spawn"], session_cookie=self.cookie())
+        client = sn.SpawnClient(spawn, {"refresh_token": "rt-newer"})
+        self.assertEqual(client.refresh_token, "rt-newer")
 
 
 class DigTests(unittest.TestCase):

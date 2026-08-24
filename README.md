@@ -46,11 +46,17 @@ Spawn's backend is a Supabase deployment at `kiln.spawn.co`, so you need four va
    - The **Request URL** contains `user_id=eq.<uuid>` → that uuid is your **`user_id`**
    - Under *Request Headers*, the **`apikey`** header → that's your **`apikey`**
 
-**Your tokens** — from browser storage:
+**Your session** — from cookies, *not* local storage:
 
-6. Switch to the **Application** tab → **Local Storage** → `https://www.spawn.co`
-7. Find the key that starts with `sb-` and ends with `-auth-token`
-8. Its value is JSON containing `"access_token"` and `"refresh_token"` — copy both
+Spawn uses `@supabase/ssr`, which keeps the session in a cookie. Don't go looking in Local Storage; it isn't there.
+
+6. Switch to the **Application** tab → **Cookies** → `https://www.spawn.co`
+7. Find the cookies named **`sb-spawn-auth-token.0`** and **`sb-spawn-auth-token.1`**
+
+   The session is too big for one cookie, so it's split into numbered chunks. You may have more than two.
+8. Copy the **Value** of `.0`, then the value of `.1` right after it, into a single string — **in order** — and put that in `session_cookie`
+
+The value starts with `base64-`. Leave that prefix on; the script strips it, decodes the rest, and pulls out both tokens for you.
 
 ### 3. Fill in the config
 
@@ -58,11 +64,19 @@ Spawn's backend is a Supabase deployment at `kiln.spawn.co`, so you need four va
 cp config.example.json config.json
 ```
 
-Paste in the webhook URL and those four values.
+Paste in the webhook URL, your `user_id`, and the `apikey`.
 
-> **`config.json` is gitignored — never commit it.** The `apikey` is a public anon key and is harmless, but `access_token` and `refresh_token` are a live login to your account. Anyone who gets the refresh token can act as you.
+For the session cookie, don't hand-edit it — it's several KB of base64 and one stray newline makes the file invalid JSON. Run this instead and paste the chunks when prompted:
 
-You only strictly need `refresh_token`; the script trades it for a fresh access token on startup. Supplying `access_token` too just saves one request.
+```bash
+python setup_session.py
+```
+
+It joins the chunks, checks they decode, and writes them in for you. It prints only masked values and sends nothing anywhere.
+
+> **`config.json` is gitignored — never commit it.** The `apikey` is a public anon key and is harmless on its own, but the session cookie contains a live login to your account. Anyone who gets it can act as you until you sign out.
+
+If you'd rather not paste the cookie, you can set `access_token` and `refresh_token` directly instead — the cookie is just a friendlier way to supply the same two values.
 
 ### 4. Test it
 
