@@ -1,26 +1,26 @@
 # savi-discord-notifier
 
-Get a Discord message when **Savi** finishes a task on [spawn.co](https://www.spawn.co) — so you can close the app and go do something else.
+Get a Discord message when **Savi** finishes building something on [spawn.co](https://www.spawn.co) — so you can close the app and go do something else.
 
-> **Unofficial.** Not affiliated with, endorsed by, or supported by Spawn. It reads a private, undocumented endpoint, which means **it can break whenever Spawn ships an update**. If it stops working, see [When it breaks](#when-it-breaks).
+> **Unofficial.** Not affiliated with, endorsed by, or supported by Spawn. It reads a private backend that nobody promised would stay stable, so **it can break whenever Spawn ships an update**. See [When it breaks](#when-it-breaks).
 
 ---
 
 ## The problem
 
-Savi's tasks run on Spawn's servers, not on your machine. That's great — you can close the desktop app and the work keeps going. But there's no way to find out it's *done* except opening the app and looking.
+Savi's work happens on Spawn's servers, so you can close the desktop app and it keeps building. But there's no way to learn it's *finished* except opening the app and looking.
 
-So either you leave a full Electron app plus a WebGPU viewport running just to watch for a notification, or you keep checking manually.
+So either you leave a whole Electron app plus a WebGPU viewport running just to catch a notification, or you keep checking manually.
 
-This is a ~200-line Python script that watches for you and posts to Discord instead. It uses about 30 MB of RAM and no GPU.
+Spawn already writes the notification you want — *"savi finished building in MONSTER O'CLOCK — come see"* — it just only shows it inside the app. This forwards those into Discord. About 30 MB of RAM, no GPU, no window.
 
 ## Requirements
 
-- Python 3.9 or newer (`python --version`)
-- A Discord channel you can create a webhook in
+- Python 3.9+ (`python --version`)
+- A Discord channel you can add a webhook to
 - A spawn.co account
 
-**No `pip install`.** Standard library only — clone it and run it.
+**No `pip install`.** Standard library only.
 
 ---
 
@@ -28,77 +28,72 @@ This is a ~200-line Python script that watches for you and posts to Discord inst
 
 ### 1. Make a Discord webhook
 
-In Discord: **Server Settings → Integrations → Webhooks → New Webhook**. Pick your channel, then **Copy Webhook URL**.
+Discord → **Server Settings → Integrations → Webhooks → New Webhook** → pick a channel → **Copy Webhook URL**.
 
-> Treat that URL like a password. Anyone who has it can post to your channel.
+> Treat that URL like a password. Anyone with it can post to your channel.
 
-### 2. Find the endpoint
+### 2. Get your credentials
 
-This is the fiddly part, and it's why the endpoint lives in config instead of in the code — Spawn doesn't publish an API, so we have to look at what the web app itself does.
+Spawn's backend is a Supabase deployment at `kiln.spawn.co`, so you need four values. All of them come from your browser while you're logged in.
 
-1. Open [spawn.co](https://www.spawn.co) in your browser and sign in
-2. Press **F12** → **Network** tab
-3. Filter to **Fetch/XHR**
-4. Ask Savi to make something, so a task is actually running
-5. Look for a request that **repeats every few seconds** — that's the app polling its own task list
-6. Click it:
-   - **Headers** tab → copy the full **Request URL** → that's your `spawn.tasks_url`
-   - **Headers** → *Request Headers* → find **`Cookie`** → right-click → **Copy value** → that's your `spawn.cookie`
-   - **Response** tab → look at the JSON to work out the field names (step 4 below)
+**Your `user_id` and `apikey`** — from a network request:
 
-<details>
-<summary>What if there's no repeating request?</summary>
+1. Open [spawn.co](https://www.spawn.co), signed in
+2. **F12** → **Network** tab
+3. Type `notifications` in the filter box
+4. Click the bell / open your notifications so a request fires
+5. Click the `notifications?...` row that appears:
+   - The **Request URL** contains `user_id=eq.<uuid>` → that uuid is your **`user_id`**
+   - Under *Request Headers*, the **`apikey`** header → that's your **`apikey`**
 
-Check the **WS** filter instead. If Spawn pushes updates over a websocket, there'll be a single long-lived connection with messages flowing through it. Polling still works fine alongside it — just find any regular HTTP endpoint that lists your tasks (loading the dashboard usually fires one).
-</details>
+**Your tokens** — from browser storage:
 
-### 3. Write your config
+6. Switch to the **Application** tab → **Local Storage** → `https://www.spawn.co`
+7. Find the key that starts with `sb-` and ends with `-auth-token`
+8. Its value is JSON containing `"access_token"` and `"refresh_token"` — copy both
+
+### 3. Fill in the config
 
 ```bash
 cp config.example.json config.json
 ```
 
-Fill in `discord_webhook_url`, `spawn.tasks_url`, and `spawn.cookie`.
+Paste in the webhook URL and those four values.
 
-> `config.json` is gitignored. **Never commit it** — it contains a live session token for your account.
+> **`config.json` is gitignored — never commit it.** The `apikey` is a public anon key and is harmless, but `access_token` and `refresh_token` are a live login to your account. Anyone who gets the refresh token can act as you.
 
-### 4. Point it at the right fields
+You only strictly need `refresh_token`; the script trades it for a fresh access token on startup. Supplying `access_token` too just saves one request.
 
-Every API names things differently, so tell the script what to look for. Once your URL and cookie are in, run:
-
-```bash
-python savi_notify.py --dump
-```
-
-That prints the first few tasks exactly as Spawn returns them. Map what you see into `spawn.fields`:
-
-```jsonc
-"tasks_path": "data.tasks",   // where the array lives; "" if the response IS the array
-"fields": {
-  "id":     "id",             // something stable and unique per task
-  "status": "state",          // the field that changes to done/failed
-  "title":  "prompt",         // shown in the Discord message
-  "url":    "shareUrl"        // optional - makes the message clickable
-}
-```
-
-Dotted paths work: `"status": "meta.state"`, `"id": "task.id"`.
-
-A status counts as finished if it's one of `done`, `complete`, `completed`, `succeeded`, `success`, `finished`, `ready` (green message) or `failed`, `error`, `errored`, `cancelled`, `canceled`, `aborted`, `timeout` (red message). If Spawn uses different words, add them to `DONE_OK` / `DONE_BAD` at the top of `savi_notify.py`.
-
-### 5. Test it
+### 4. Test it
 
 ```bash
 python savi_notify.py --test-discord
 ```
 
-A message should land in your channel. Then:
+A message should land in your channel. Then check the Spawn side:
 
 ```bash
-python savi_notify.py --once -v
+python savi_notify.py --dump
 ```
 
-The first run records what's already there **without** notifying, so you don't get spammed about tasks that finished last week. Run it once more and it'll start watching for real.
+That prints your latest notifications as raw JSON. If you see them, you're connected.
+
+### 5. Tune what gets forwarded
+
+Your feed probably has more than Savi updates in it — follows, likes, comments. See what's in there:
+
+```bash
+python savi_notify.py --types
+```
+
+Then keep only what you want, in `config.json`:
+
+```jsonc
+"only_types": ["savi_done"],     // allowlist - only these
+"ignore_types": ["new_follower"] // or blocklist - everything but these
+```
+
+If the Discord messages come out looking wrong, check `--dump` for which column holds the sentence and point `fields.text` at it (dotted paths work, e.g. `"data.headline"`). Left empty, the script tries `title`, `body`, `message`, `text`, `description`, `content` in that order.
 
 ### 6. Run it in the background
 
@@ -106,57 +101,68 @@ The first run records what's already there **without** notifying, so you don't g
 powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
 ```
 
-Registers a Scheduled Task that starts at logon and runs silently via `pythonw.exe` — no console window, no tray icon, nothing to look at.
+Registers a Scheduled Task that starts at logon and runs silently via `pythonw.exe` — no console window, no tray icon.
 
 ```powershell
-Stop-ScheduledTask -TaskName SaviDiscordNotifier          # pause it
-powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall   # remove it
+Stop-ScheduledTask -TaskName SaviDiscordNotifier                            # pause
+powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall   # remove
 ```
 
-On macOS or Linux, use a `launchd` plist or a systemd user unit — PRs welcome.
+macOS/Linux: a `launchd` plist or systemd user unit does the same job. PRs welcome.
 
 ---
 
 ## How it works
 
-Every `poll_seconds` (default 60) it fetches your task list, compares each task's status against `state.json`, and posts to Discord when one crosses into a finished state. `state.json` is what stops it notifying you twice for the same task, including across restarts.
+Every `poll_seconds` (default 60) it runs the same query the web app runs:
 
-It backs off exponentially on errors, adds a little random jitter so it isn't a perfectly predictable load on Spawn's servers, and sends itself an identifiable `User-Agent`. Please don't lower `poll_seconds` to something rude — a minute is already faster than you'd notice.
+```
+GET https://kiln.spawn.co/rest/v1/notifications
+    ?select=*&user_id=eq.<you>&status=neq.archived
+    &order=created_at.desc,id.desc&limit=50
+```
 
-If your session expires, it posts one message telling you so and exits, rather than dying quietly and leaving you wondering why the pings stopped.
+Anything with an id it hasn't seen before gets forwarded to Discord, oldest first. `state.json` holds the ids it's already sent, so restarts don't re-notify you.
+
+Access tokens are short-lived, so on a `401` it refreshes using your refresh token and retries. Supabase rotates refresh tokens on use, so the new one is written back to `state.json` — **that file is a credential too.** In practice this means you paste tokens once, not every hour.
+
+It backs off exponentially on errors, jitters its interval so it isn't a metronome against their servers, and sends an identifiable `User-Agent`. Please don't drop `poll_seconds` to something rude — a minute is already faster than you'd notice.
+
+If the refresh ever fails, it posts one message saying so and exits, instead of dying quietly and leaving you wondering why the pings stopped.
 
 ## When it breaks
 
-Spawn is moving fast and this reads an endpoint they never promised to keep stable.
-
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `session token has expired` | Cookie went stale | Redo step 2, paste the new `Cookie` value |
-| `spawn.co returned 404` | Endpoint moved | Redo step 2 to find the new URL |
-| `Expected a list of tasks at path...` | Response shape changed | Re-run `--dump`, fix `tasks_path` |
-| Runs fine, never notifies | Status words changed | `--dump` while a task is finishing, check `DONE_OK` |
+| `token could not be refreshed` | Refresh token revoked or expired | Redo step 2, paste new tokens |
+| `returned 404` | Table or route renamed | Check `spawn.table` and `base_url` |
+| `Expected a list of rows` | Response shape changed | Run `--dump`, open an issue |
+| Runs fine, nothing arrives | Everything filtered out | Check `only_types` against `--types` |
+| Messages look like raw JSON | Text column renamed | Set `fields.text` from `--dump` |
 
-Most breakages are a config edit, not a code change. That's deliberate.
+Most breakage is a config edit, not a code change. That's deliberate.
 
 ## Limitations
 
-- **Polling, not push.** Up to `poll_seconds` of delay.
-- **Only while your PC is on.** It's a local script. Running it on a cheap VPS or a free tier works too, but then your session token lives on someone else's server — your call.
-- **Session tokens expire.** Expect to re-paste the cookie periodically. There's no API key to use instead, because there's no public API.
+- **Polling, not push.** Up to `poll_seconds` of delay. Supabase Realtime could make this instant — unimplemented, PRs welcome.
+- **Only while your PC is on.** It's a local script. A cheap VPS works too, but then your Spawn login lives on someone else's box — your call.
+- **It mirrors notifications, not task state.** If Spawn doesn't generate a notification for something, this can't tell you about it.
 
 ## Contributing
-
-Issues and PRs welcome — especially macOS/Linux service files, and reports of what the response shape looks like on your account so the defaults can get smarter.
 
 ```bash
 python -m unittest -v
 ```
 
-Tests are stdlib-only and hit no network.
+Stdlib only, no network calls. Useful PRs: macOS/Linux service files, Supabase Realtime support, and reports of what `--types` prints on your account so the defaults can get smarter.
+
+> If you file an issue with `--dump` output, **redact it first** — it contains your `user_id` and possibly private project names.
 
 ## A note on Spawn
 
-If you work at Spawn: this exists because people want to know when Savi is done without leaving the app open. A real webhook would make this repo unnecessary, and I'd retire it happily.
+If you work at Spawn: this exists because people want to know when Savi is done without leaving the app open. A real webhook or an email toggle would make this repo unnecessary, and I'd retire it happily.
+
+It only reads your own notifications, at a slower rate than the app itself polls. If you'd rather it didn't exist, open an issue and let's talk.
 
 ## License
 

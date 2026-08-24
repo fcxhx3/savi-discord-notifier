@@ -1,5 +1,5 @@
 """
-Tests for the notification state machine - stdlib unittest, no network.
+Tests for the notification forwarding logic - stdlib unittest, no network.
 
 Run:  python -m unittest -v
 """
@@ -13,27 +13,37 @@ from unittest import mock
 import savi_notify as sn
 
 
-CFG = {
-    "discord_webhook_url": "https://discord.example/webhook",
-    "spawn": {
-        "tasks_url": "https://spawn.example/api/tasks",
-        "fields": {"id": "id", "status": "status", "title": "name", "url": "link"},
-    },
-}
+def cfg(**overrides):
+    base = {
+        "discord_webhook_url": "https://discord.example/webhook",
+        "spawn": {
+            "base_url": "https://kiln.example",
+            "user_id": "u-1",
+            "apikey": "anon-key",
+            "access_token": "at-1",
+            "fields": {},
+        },
+    }
+    base["spawn"].update(overrides.pop("spawn", {}))
+    base.update(overrides)
+    return base
 
 
-def task(tid, status, name="Build a spaceship"):
-    return {"id": tid, "status": status, "name": name,
-            "link": f"https://www.spawn.co/p/{tid}"}
+def note(nid, title="savi finished building in KESSLER FLATS", kind="savi_done",
+         created="2026-08-24T19:00:00Z", **extra):
+    row = {"id": nid, "user_id": "u-1", "title": title, "type": kind,
+           "status": "delivered", "created_at": created}
+    row.update(extra)
+    return row
 
 
-class StateMachineTests(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        patcher = mock.patch.object(sn, "STATE_PATH", Path(self.tmp.name) / "state.json")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        p = mock.patch.object(sn, "STATE_PATH", Path(tmp.name) / "state.json")
+        p.start()
+        self.addCleanup(p.stop)
 
         self.posts = []
         p2 = mock.patch.object(sn, "post_discord",
@@ -41,100 +51,174 @@ class StateMachineTests(unittest.TestCase):
         p2.start()
         self.addCleanup(p2.stop)
 
-    def run_poll(self, tasks, state, seed_only=False):
-        with mock.patch.object(sn, "fetch_tasks", return_value=tasks):
-            return sn.check_once(CFG, state, seed_only=seed_only)
+    def poll(self, rows, state, config=None, seed_only=False):
+        config = config or cfg()
+        client = sn.SpawnClient(config["spawn"], state)
+        with mock.patch.object(client, "fetch_notifications", return_value=rows):
+            return sn.check_once(client, config, state, seed_only=seed_only)
 
-    def test_seed_run_does_not_notify(self):
-        state = {"seen": {}}
-        n = self.run_poll([task("a", "done"), task("b", "running")], state, seed_only=True)
-        self.assertEqual(n, 0)
+    def texts(self):
+        return [p["embeds"][0]["description"] for p in self.posts]
+
+
+class ForwardingTests(Base):
+    def test_seed_run_sends_nothing(self):
+        state = {}
+        self.poll([note("a"), note("b")], state, seed_only=True)
         self.assertEqual(self.posts, [])
-        self.assertEqual(state["seen"]["a"], "done")
+        self.assertEqual(set(state["seen_ids"]), {"a", "b"})
 
-    def test_transition_to_done_notifies_once(self):
-        state = {"seen": {}}
-        self.run_poll([task("a", "running")], state)
-        self.assertEqual(len(self.posts), 0, "running task should not notify")
+    def test_new_notification_is_forwarded_once(self):
+        state = {}
+        self.poll([note("a")], state, seed_only=True)
 
-        self.run_poll([task("a", "done")], state)
-        self.assertEqual(len(self.posts), 1, "finishing should notify")
-
-        # Poll again with the task still sitting there finished.
-        self.run_poll([task("a", "done")], state)
-        self.assertEqual(len(self.posts), 1, "must not notify twice for the same task")
-
-    def test_failed_task_gets_error_styling(self):
-        state = {"seen": {"a": "running"}}
-        self.run_poll([task("a", "failed")], state)
-        self.assertEqual(len(self.posts), 1)
-        embed = self.posts[0]["embeds"][0]
-        self.assertEqual(embed["color"], 0xE74C3C)
-        self.assertIn("problem", embed["title"].lower())
-
-    def test_success_embed_carries_title_and_link(self):
-        state = {"seen": {"a": "running"}}
-        self.run_poll([task("a", "completed", name="Neon city")], state)
-        embed = self.posts[0]["embeds"][0]
-        self.assertIn("Neon city", embed["description"])
-        self.assertEqual(embed["url"], "https://www.spawn.co/p/a")
-        self.assertEqual(embed["color"], 0x2ECC71)
-
-    def test_unknown_status_is_ignored(self):
-        state = {"seen": {}}
-        self.run_poll([task("a", "queued"), task("b", "generating")], state)
-        self.assertEqual(self.posts, [])
-
-    def test_state_survives_a_restart(self):
-        state = {"seen": {}}
-        self.run_poll([task("a", "running")], state)
-        self.run_poll([task("a", "done")], state)
+        self.poll([note("b"), note("a")], state)
         self.assertEqual(len(self.posts), 1)
 
-        reloaded = sn.load_state()          # simulate the process restarting
-        self.run_poll([task("a", "done")], reloaded)
-        self.assertEqual(len(self.posts), 1, "restart must not re-notify")
+        # Same feed again - b is now old news.
+        self.poll([note("b"), note("a")], state)
+        self.assertEqual(len(self.posts), 1, "must not re-send an old notification")
 
-    def test_state_is_trimmed(self):
-        state = {"seen": {str(i): "done" for i in range(600)}}
-        self.run_poll([], state)
-        self.assertLessEqual(len(state["seen"]), 500)
+    def test_delivered_oldest_first(self):
+        # Server returns newest first; Discord should read chronologically.
+        state = {"seen_ids": []}
+        rows = [note("new", title="third"), note("mid", title="second"),
+                note("old", title="first")]
+        self.poll(rows, state)
+        self.assertEqual(self.texts(), ["first", "second", "third"])
+
+    def test_survives_restart(self):
+        state = {}
+        self.poll([note("a")], state, seed_only=True)
+        self.poll([note("b"), note("a")], state)
+        self.assertEqual(len(self.posts), 1)
+
+        reloaded = sn.load_state()
+        self.poll([note("b"), note("a")], reloaded)
+        self.assertEqual(len(self.posts), 1, "restart must not re-send")
+
+    def test_seen_list_is_bounded(self):
+        state = {"seen_ids": [str(i) for i in range(600)]}
+        self.poll([], state)
+        self.assertLessEqual(len(state["seen_ids"]), 500)
+
+
+class FilterTests(Base):
+    def test_only_types_keeps_just_those(self):
+        c = cfg(spawn={"only_types": ["savi_done"]})
+        state = {"seen_ids": []}
+        self.poll([note("a", kind="savi_done", title="savi finished"),
+                   note("b", kind="new_follower", title="someone followed you")],
+                  state, config=c)
+        self.assertEqual(self.texts(), ["savi finished"])
+
+    def test_ignore_types_drops_those(self):
+        c = cfg(spawn={"ignore_types": ["new_follower"]})
+        state = {"seen_ids": []}
+        self.poll([note("a", kind="savi_done", title="savi finished"),
+                   note("b", kind="new_follower", title="someone followed you")],
+                  state, config=c)
+        self.assertEqual(self.texts(), ["savi finished"])
+
+    def test_filtered_rows_are_still_marked_seen(self):
+        """Otherwise they'd be re-evaluated forever."""
+        c = cfg(spawn={"only_types": ["savi_done"]})
+        state = {"seen_ids": []}
+        self.poll([note("b", kind="new_follower")], state, config=c)
+        self.assertIn("b", state["seen_ids"])
+
+
+class TextTests(unittest.TestCase):
+    def test_configured_field_wins(self):
+        row = {"title": "ignore me", "data": {"headline": "use me"}}
+        self.assertEqual(sn.notification_text(row, {"text": "data.headline"}), "use me")
+
+    def test_falls_back_through_common_names(self):
+        self.assertEqual(sn.notification_text({"body": "hello"}, {}), "hello")
+        self.assertEqual(sn.notification_text({"message": "hi"}, {}), "hi")
+
+    def test_unknown_shape_shows_payload_rather_than_nothing(self):
+        row = {"id": "x", "user_id": "u", "data": {"game": "KESSLER FLATS"}}
+        out = sn.notification_text(row, {})
+        self.assertIn("KESSLER FLATS", out)
+        self.assertNotEqual(out.strip(), "")
+
+    def test_link_becomes_clickable(self):
+        row = note("a", url="https://www.spawn.co/p/abc")
+        payload = sn.build_payload(row, {}, {})
+        self.assertEqual(payload["embeds"][0]["url"], "https://www.spawn.co/p/abc")
+
+    def test_mention_is_added_when_configured(self):
+        payload = sn.build_payload(note("a"), {}, {"mention": "<@123>"})
+        self.assertEqual(payload["content"], "<@123>")
+
+
+class AuthTests(unittest.TestCase):
+    def make_client(self, state=None):
+        return sn.SpawnClient(cfg()["spawn"], state if state is not None else {})
+
+    def test_401_triggers_refresh_then_retries(self):
+        client = self.make_client()
+        responses = [
+            (401, {"msg": "JWT expired"}),
+            (200, [note("a")]),
+        ]
+        with mock.patch.object(sn, "http_json", side_effect=responses) as http, \
+             mock.patch.object(client, "refresh", return_value=True) as refresh:
+            rows = client.fetch_notifications()
+        refresh.assert_called_once()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(http.call_count, 2)
+
+    def test_401_without_refresh_raises(self):
+        client = self.make_client()
+        with mock.patch.object(sn, "http_json", return_value=(401, {})), \
+             mock.patch.object(client, "refresh", return_value=False):
+            with self.assertRaises(sn.AuthExpired):
+                client.fetch_notifications()
+
+    def test_refresh_persists_rotated_token(self):
+        state = {"refresh_token": "old"}
+        client = self.make_client(state)
+        new = {"access_token": "at-2", "refresh_token": "rt-2"}
+        with mock.patch.object(sn, "http_json", return_value=(200, new)), \
+             mock.patch.object(sn, "save_state") as save:
+            self.assertTrue(client.refresh())
+        self.assertEqual(client.access_token, "at-2")
+        self.assertEqual(state["refresh_token"], "rt-2")
+        save.assert_called_once()
+
+    def test_state_refresh_token_beats_config(self):
+        spawn = dict(cfg()["spawn"], refresh_token="from-config")
+        client = sn.SpawnClient(spawn, {"refresh_token": "from-state"})
+        self.assertEqual(client.refresh_token, "from-state")
+
+    def test_500_is_transient(self):
+        client = self.make_client()
+        with mock.patch.object(sn, "http_json", return_value=(500, "boom")):
+            with self.assertRaises(sn.TransientError):
+                client.fetch_notifications()
+
+
+class UrlTests(unittest.TestCase):
+    def test_query_matches_what_the_web_app_sends(self):
+        url = sn.SpawnClient(cfg()["spawn"], {})._notifications_url()
+        self.assertTrue(url.startswith("https://kiln.example/rest/v1/notifications?"))
+        for part in ("select=*", "user_id=eq.u-1", "status=neq.archived",
+                     "order=created_at.desc,id.desc", "limit=50"):
+            self.assertIn(part, url)
+
+    def test_skip_archived_can_be_turned_off(self):
+        spawn = dict(cfg()["spawn"], skip_archived=False)
+        self.assertNotIn("neq.archived", sn.SpawnClient(spawn, {})._notifications_url())
 
 
 class DigTests(unittest.TestCase):
     def test_dotted_paths(self):
-        blob = {"data": {"tasks": [{"id": 1}, {"id": 2}]}}
-        self.assertEqual(sn.dig(blob, "data.tasks.1.id"), 2)
+        blob = {"data": {"items": [{"id": 1}, {"id": 2}]}}
+        self.assertEqual(sn.dig(blob, "data.items.1.id"), 2)
         self.assertEqual(sn.dig(blob, "data.nope", "fallback"), "fallback")
         self.assertEqual(sn.dig(blob, ""), blob)
-
-    def test_missing_index_falls_back(self):
-        self.assertEqual(sn.dig({"a": [1]}, "a.9", "x"), "x")
-
-
-class FetchTests(unittest.TestCase):
-    def test_401_raises_auth_expired(self):
-        with mock.patch.object(sn, "http_json", return_value=(401, {"error": "nope"})):
-            with self.assertRaises(sn.AuthExpired):
-                sn.fetch_tasks({"tasks_url": "https://x.example"})
-
-    def test_500_is_transient(self):
-        with mock.patch.object(sn, "http_json", return_value=(500, "boom")):
-            with self.assertRaises(sn.TransientError):
-                sn.fetch_tasks({"tasks_url": "https://x.example"})
-
-    def test_tasks_path_is_honoured(self):
-        payload = {"result": {"items": [{"id": "z", "status": "done"}]}}
-        with mock.patch.object(sn, "http_json", return_value=(200, payload)):
-            got = sn.fetch_tasks({"tasks_url": "https://x.example",
-                                  "tasks_path": "result.items"})
-        self.assertEqual(got, [{"id": "z", "status": "done"}])
-
-    def test_bad_shape_explains_itself(self):
-        with mock.patch.object(sn, "http_json", return_value=(200, {"tasks": "not a list"})):
-            with self.assertRaises(sn.TransientError) as ctx:
-                sn.fetch_tasks({"tasks_url": "https://x.example", "tasks_path": "tasks"})
-        self.assertIn("tasks_path", str(ctx.exception))
 
 
 if __name__ == "__main__":

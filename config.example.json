@@ -4,18 +4,29 @@
   "poll_seconds": 60,
   "notify_on_first_run": false,
 
+  "mention": "",
+
   "spawn": {
-    "tasks_url": "https://www.spawn.co/api/REPLACE_ME",
-    "method": "GET",
+    "base_url": "https://kiln.spawn.co",
 
-    "cookie": "PASTE_YOUR_COOKIE_HEADER_HERE",
+    "user_id": "00000000-0000-0000-0000-000000000000",
 
-    "tasks_path": "",
+    "apikey": "PASTE_THE_APIKEY_HEADER_HERE",
+
+    "access_token": "PASTE_ACCESS_TOKEN_HERE",
+    "refresh_token": "PASTE_REFRESH_TOKEN_HERE",
+
+    "only_types": [],
+    "ignore_types": [],
+
+    "table": "notifications",
+    "limit": 50,
+    "skip_archived": true,
 
     "fields": {
       "id": "id",
-      "status": "status",
-      "title": "title",
+      "type": "type",
+      "text": "",
       "url": "url"
     }
   }
