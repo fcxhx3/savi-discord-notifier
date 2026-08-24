@@ -1,173 +1,169 @@
 # savi-discord-notifier
 
-Get a Discord message when **Savi** finishes building something on [spawn.co](https://www.spawn.co) — so you can close the app and go do something else.
+Pings a Discord channel when Savi finishes building something on [spawn.co](https://www.spawn.co), so you can close the app and go do something else.
 
-> **Unofficial.** Not affiliated with, endorsed by, or supported by Spawn. It reads a private backend that nobody promised would stay stable, so **it can break whenever Spawn ships an update**. See [When it breaks](#when-it-breaks).
+**This is unofficial.** I don't work for Spawn and they haven't blessed it. It reads an endpoint that nobody documented, which means it can stop working any time they push an update. There's a [troubleshooting table](#when-it-breaks) for when that happens.
 
----
+## Why
 
-## The problem
+Savi's builds run on Spawn's servers. You can close the desktop app and she carries on, which is the whole point of it. The catch is there's no way to find out she's finished without opening the app again and looking.
 
-Savi's work happens on Spawn's servers, so you can close the desktop app and it keeps building. But there's no way to learn it's *finished* except opening the app and looking.
+So your options are leaving a full Electron app plus a WebGPU viewport running just to catch a notification, or checking manually every ten minutes.
 
-So either you leave a whole Electron app plus a WebGPU viewport running just to catch a notification, or you keep checking manually.
+Spawn already writes the notification you want. It just only shows up inside the app:
 
-Spawn already writes the notification you want — *"savi finished building in MONSTER O'CLOCK — come see"* — it just only shows it inside the app. This forwards those into Discord. About 30 MB of RAM, no GPU, no window.
+> savi finished building in MONSTER O'CLOCK - come see
 
-## Requirements
+This forwards those to Discord. It's about 30 MB of RAM, no GPU, no window, nothing in the tray.
 
-- Python 3.9+ (`python --version`)
-- A Discord channel you can add a webhook to
+## What you need
+
+- Python 3.9 or newer (`python --version`)
+- A Discord channel you can make a webhook in
 - A spawn.co account
 
-**No `pip install`.** Standard library only.
-
----
+No `pip install`. It's stdlib only, so clone it and run it.
 
 ## Setup
 
-### 1. Make a Discord webhook
+### 1. Discord webhook
 
-Discord → **Server Settings → Integrations → Webhooks → New Webhook** → pick a channel → **Copy Webhook URL**.
+Server Settings > Integrations > Webhooks > New Webhook. Pick a channel, hit Copy Webhook URL.
 
-> Treat that URL like a password. Anyone with it can post to your channel.
+Treat that URL like a password. Anyone who has it can post in your channel.
 
-### 2. Get your credentials
+### 2. Your credentials
 
-Spawn's backend is a Supabase deployment at `kiln.spawn.co`, so you need four values. All of them come from your browser while you're logged in.
+Spawn's backend is a Supabase deployment at `kiln.spawn.co`, so there are three things to grab. All of them come out of your browser while you're signed in.
 
-**Your `user_id` and `apikey`** — from a network request:
+**user_id and apikey**, from a network request:
 
-1. Open [spawn.co](https://www.spawn.co), signed in
-2. **F12** → **Network** tab
-3. Type `notifications` in the filter box
-4. Click the bell / open your notifications so a request fires
-5. Click the `notifications?...` row that appears:
-   - The **Request URL** contains `user_id=eq.<uuid>` → that uuid is your **`user_id`**
-   - Under *Request Headers*, the **`apikey`** header → that's your **`apikey`**
+1. Open spawn.co, signed in, and press F12
+2. Network tab, then type `notifications` in the filter box
+3. Open your notifications so a request actually fires
+4. Click the `notifications?...` row that shows up:
+   - The Request URL has `user_id=eq.<uuid>` in it. That uuid is your `user_id`.
+   - Under Request Headers there's an `apikey` line. That's your `apikey`. It's a public anon key, so it's not a secret.
 
-**Your session** — from cookies, *not* local storage:
+**The session**, from cookies. Not local storage. I looked there first and it isn't there, because Spawn uses `@supabase/ssr` which keeps the session in a cookie instead.
 
-Spawn uses `@supabase/ssr`, which keeps the session in a cookie. Don't go looking in Local Storage; it isn't there.
+5. Application tab, then Cookies, then `https://www.spawn.co`
+6. Look for `sb-spawn-auth-token.0` and `sb-spawn-auth-token.1`
 
-6. Switch to the **Application** tab → **Cookies** → `https://www.spawn.co`
-7. Find the cookies named **`sb-spawn-auth-token.0`** and **`sb-spawn-auth-token.1`**
+The session is too big to fit in one cookie so it gets split into numbered chunks. You might have more than two.
 
-   The session is too big for one cookie, so it's split into numbered chunks. You may have more than two.
-8. Copy the **Value** of `.0`, then the value of `.1` right after it, into a single string — **in order** — and put that in `session_cookie`
-
-The value starts with `base64-`. Leave that prefix on; the script strips it, decodes the rest, and pulls out both tokens for you.
-
-### 3. Fill in the config
+### 3. Config
 
 ```bash
 cp config.example.json config.json
 ```
 
-Paste in the webhook URL, your `user_id`, and the `apikey`.
+Fill in `discord_webhook_url`, `user_id` and `apikey`.
 
-For the session cookie, don't hand-edit it — it's several KB of base64 and one stray newline makes the file invalid JSON. Run this instead and paste the chunks when prompted:
+For the cookie, don't edit it in by hand. It's several KB of base64 and one stray newline makes the whole file invalid JSON. Run this instead:
 
 ```bash
 python setup_session.py
 ```
 
-It joins the chunks, checks they decode, and writes them in for you. It prints only masked values and sends nothing anywhere.
+Paste chunk `.0`, press enter, paste `.1`, press enter, then enter again on the blank line. It glues them together, checks they decode, and writes them in. It only prints masked values and doesn't send anything anywhere.
 
-> **`config.json` is gitignored — never commit it.** The `apikey` is a public anon key and is harmless on its own, but the session cookie contains a live login to your account. Anyone who gets it can act as you until you sign out.
+`config.json` is gitignored, and you should keep it that way. The apikey is harmless but the session cookie is a live login to your account.
 
-If you'd rather not paste the cookie, you can set `access_token` and `refresh_token` directly instead — the cookie is just a friendlier way to supply the same two values.
-
-### 4. Test it
+### 4. Check it works
 
 ```bash
 python savi_notify.py --test-discord
 ```
 
-A message should land in your channel. Then check the Spawn side:
+If a message lands in your channel, the Discord half is fine. Now the Spawn half:
 
 ```bash
 python savi_notify.py --dump
 ```
 
-That prints your latest notifications as raw JSON. If you see them, you're connected.
+That prints your latest notifications as raw JSON. If you can see them, you're connected.
 
-### 5. Tune what gets forwarded
+### 5. Pick what gets forwarded
 
-Your feed probably has more than Savi updates in it — follows, likes, comments. See what's in there:
+Your feed has more in it than Savi updates. Mine also had people playing my games, likes, and world_alive pings. Have a look:
 
 ```bash
 python savi_notify.py --types
 ```
 
-Then keep only what you want, in `config.json`:
+On my account that gave:
 
-```jsonc
-"only_types": ["savi_finished"],  // allowlist - only these
-"ignore_types": ["new_follower"]  // or blocklist - everything but these
+```
+  21  savi_finished
+  18  player_played
+   7  world_alive
+   2  like
+   2  pulse_milestone
 ```
 
-> **Filter on `kind`, not `type`.** A row carries both. `type` is the UI action — it's `"redirect"` on essentially everything and tells you nothing. `kind` is what actually happened (`savi_finished`). The defaults already point at `kind`; this is only a trap if you go changing `fields.type` by hand.
-
-Both *"savi finished building in X"* and *"savi built most of X — a couple pieces want your eye"* share `kind: savi_finished`, so you can't split them by kind. Both mean Savi has stopped and wants you, which is usually what you want to hear about anyway.
-
-### Message style
-
-Two looks, set with `style` in `config.json`:
+Then pick, in `config.json`:
 
 ```jsonc
-"style": "plain"   // default - one line, like a person typed it
-"style": "embed"   // a boxed card with a coloured bar and a footer
+"only_types": ["savi_finished"],  // allowlist, just these
+"ignore_types": ["player_played"] // or blocklist, everything except these
 ```
 
-Plain comes out as:
+The default is `savi_finished` only, which is the flames and nothing else.
 
-> [Open in Spawn](#) - savi finished building in MONSTER O'CLOCK — come see
+One thing worth knowing: filter on `kind`, not `type`. Every row has both. `type` is the UI action and says `redirect` on nearly everything, so it's useless for this. `kind` is what actually happened. The defaults already point at the right one, this only bites you if you go changing `fields.type` yourself.
 
-The link label is `link_label`, and `mention` (e.g. `"<@your-user-id>"`) prefixes the message if you want a ping rather than a quiet post.
+Also, `savi finished building in X` and `savi built most of X - a couple pieces want your eye` share the same kind, so you can't separate those two. Both of them mean she's stopped and wants you, which is normally what you're after anyway.
 
-To see how a real message will look in Discord:
+### 6. How the message looks
+
+Two styles, set with `style`:
+
+```jsonc
+"style": "plain"   // default, one line
+"style": "embed"   // boxed card with a coloured bar and a footer
+```
+
+Plain comes out as a single line with the link at the front, the way you'd type it yourself. Change the link text with `link_label`, and set `mention` (something like `"<@your-user-id>"`) if you want it to actually ping you rather than sit there quietly.
+
+To see a real one without waiting for Savi:
 
 ```bash
 python savi_notify.py --preview
 ```
 
-That sends your most recent notification and leaves `state.json` alone, so it won't affect what you get later.
+That sends your most recent notification and leaves `state.json` alone, so it won't affect anything later.
 
-If the text comes out wrong, check `--dump` for which column holds the sentence and point `fields.text` at it (dotted paths work, e.g. `"data.headline"`). On Spawn it's `message`.
-
-### 6. Run it in the background
+### 7. Run it in the background
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
 ```
 
-Either way it runs via `pythonw.exe` — no console window, no tray icon — and starts immediately so you don't have to log out.
+Runs through `pythonw.exe` so there's no console window, and starts straight away rather than waiting for you to log out.
 
-It tries two methods in order:
+It tries two things in order:
 
-1. **A Scheduled Task**, which also restarts the script if it ever dies. Registering one usually needs admin.
-2. **A Startup-folder shortcut**, if the task is refused. No admin required.
+1. A Scheduled Task, which has the advantage of restarting the script if it ever dies. Registering one usually needs admin.
+2. A shortcut in your Startup folder, if the task gets refused. No admin needed.
 
-`Register-ScheduledTask : Access is denied` is expected on a standard account — the installer catches it and falls back on its own. Force one with `-Method task` or `-Method startup`.
+`Register-ScheduledTask : Access is denied` is normal on a standard account. The installer catches it and falls back on its own. Force one with `-Method task` or `-Method startup`.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall   # remove either
+powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall
 ```
 
-Check it's actually running:
+To check it's actually alive:
 
 ```powershell
 Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object { $_.CommandLine -like '*savi_notify*' }
 ```
 
-macOS/Linux: a `launchd` plist or systemd user unit does the same job. PRs welcome.
-
----
+On macOS or Linux you'd want a launchd plist or a systemd user unit. I haven't written those, PRs welcome.
 
 ## How it works
 
-Every `poll_seconds` (default 60) it runs the same query the web app runs:
+Every `poll_seconds` (60 by default) it runs the same query the site itself runs:
 
 ```
 GET https://kiln.spawn.co/rest/v1/notifications
@@ -175,31 +171,33 @@ GET https://kiln.spawn.co/rest/v1/notifications
     &order=created_at.desc,id.desc&limit=50
 ```
 
-Anything with an id it hasn't seen before gets forwarded to Discord, oldest first. `state.json` holds the ids it's already sent, so restarts don't re-notify you.
+Anything with an id it hasn't seen goes to Discord, oldest first. `state.json` keeps the ids it's already sent so a restart doesn't spam you with things you've already been told about.
 
-Access tokens are short-lived, so on a `401` it refreshes using your refresh token and retries. Supabase rotates refresh tokens on use, so the new one is written back to `state.json` — **that file is a credential too.** In practice this means you paste tokens once, not every hour.
+Access tokens die after about an hour, so on a 401 it refreshes and retries. Supabase rotates the refresh token every time you use it, so the new one gets saved back to `state.json`. That file is a credential too, treat it accordingly. The upshot is you paste the cookie once, not every hour.
 
-It backs off exponentially on errors, jitters its interval so it isn't a metronome against their servers, and sends an identifiable `User-Agent`. Please don't drop `poll_seconds` to something rude — a minute is already faster than you'd notice.
+It backs off exponentially when things fail and jitters the interval so it isn't hammering Spawn on a perfect metronome. Please don't drop `poll_seconds` to something rude, a minute is already faster than you'll notice.
 
-If the refresh ever fails, it posts one message saying so and exits, instead of dying quietly and leaving you wondering why the pings stopped.
+If the refresh ever fails it posts one message saying so and exits, rather than dying quietly and leaving you wondering why the pings stopped.
+
+The first run is deliberately silent. It records what's already in your feed without forwarding any of it, otherwise installing this dumps your entire notification history into the channel at once.
 
 ## When it breaks
 
-| Symptom | Likely cause | Fix |
+| What you see | Probably | Fix |
 |---|---|---|
-| `token could not be refreshed` | Refresh token revoked or expired | Redo step 2, paste new tokens |
+| `token could not be refreshed` | Refresh token expired or revoked | Redo step 2, run `setup_session.py` again |
 | `returned 404` | Table or route renamed | Check `spawn.table` and `base_url` |
-| `Expected a list of rows` | Response shape changed | Run `--dump`, open an issue |
-| Runs fine, nothing arrives | Everything filtered out | Check `only_types` against `--types` |
-| Messages look like raw JSON | Text column renamed | Set `fields.text` from `--dump` |
+| `Expected a list of rows` | Response shape changed | Run `--dump` and open an issue |
+| Runs fine, nothing arrives | Everything's being filtered | Compare `only_types` against `--types` |
+| Messages are raw JSON | Text column renamed | Set `fields.text` from what `--dump` shows |
 
-Most breakage is a config edit, not a code change. That's deliberate.
+Most of these are a config edit rather than a code change. That's on purpose, so you're not stuck waiting for me to push a fix.
 
 ## Limitations
 
-- **Polling, not push.** Up to `poll_seconds` of delay. Supabase Realtime could make this instant — unimplemented, PRs welcome.
-- **Only while your PC is on.** It's a local script. A cheap VPS works too, but then your Spawn login lives on someone else's box — your call.
-- **It mirrors notifications, not task state.** If Spawn doesn't generate a notification for something, this can't tell you about it.
+- It polls, so there's up to `poll_seconds` of delay. Supabase Realtime would make it instant, I just haven't written it.
+- Only runs while your PC is on. A cheap VPS works too, but then your Spawn login is sat on someone else's box, which is your call to make.
+- It forwards notifications, not build state. If Spawn doesn't write a notification for something, this can't tell you about it.
 
 ## Contributing
 
@@ -207,16 +205,20 @@ Most breakage is a config edit, not a code change. That's deliberate.
 python -m unittest -v
 ```
 
-Stdlib only, no network calls. Useful PRs: macOS/Linux service files, Supabase Realtime support, and reports of what `--types` prints on your account so the defaults can get smarter.
+42 tests, stdlib only, no network calls.
 
-> If you file an issue with `--dump` output, **redact it first** — it contains your `user_id` and possibly private project names.
+Things that would genuinely help: launchd and systemd units, Supabase Realtime support, and reports of what `--types` prints on your account so the defaults can get smarter.
 
-## A note on Spawn
+If you open an issue with `--dump` output in it, strip your `user_id` first. It's in every row, and the messages have your project names in them.
 
-If you work at Spawn: this exists because people want to know when Savi is done without leaving the app open. A real webhook or an email toggle would make this repo unnecessary, and I'd retire it happily.
+## If you work at Spawn
 
-It only reads your own notifications, at a slower rate than the app itself polls. If you'd rather it didn't exist, open an issue and let's talk.
+Hi! I built this for myself. I kept asking Savi for something, closing the app so I could get my machine back, and then having no idea when she'd finished. Maybe I'm the only person who works that way, but if anyone else has the same problem then hopefully this is useful to them too.
+
+Honestly, I'd love for this to stop being necessary. If notifications outside the app ever turned into a real feature, whether that's a webhook, an email, or something I haven't thought of, I'd be genuinely happy about it. I really do want it :)
+
+And if you'd rather this didn't exist, just ask and I'll take it down, no argument from me. For what it's worth it only reads my own notifications, and it checks less often than the app does.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

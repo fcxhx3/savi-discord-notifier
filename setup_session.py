@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Paste your Spawn session cookie in, safely.
+Gets your Spawn session cookie into config.json without breaking it.
 
-The session lives in cookies named sb-spawn-auth-token.0, .1, ... and the
-combined value is several KB of base64. Hand-editing that into JSON is a
-reliable way to produce a broken config, so this does it for you.
+The session sits in cookies called sb-spawn-auth-token.0, .1 and so on, and
+together they come to several KB of base64. Pasting that into a JSON string
+by hand goes wrong about half the time, so let a script do it.
 
     python setup_session.py
 
-Nothing is sent anywhere. It writes to your local config.json and prints
-only masked values.
+Doesn't send anything anywhere. Writes to your local config.json and only
+ever prints masked values.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def mask(token: str) -> str:
 
 
 def token_expiry(access_token: str):
-    """Decode the JWT payload just to show when it runs out. No verification."""
+    """Read the exp claim so we can show when it runs out. No verifying."""
     import base64
     import datetime
     try:
@@ -73,7 +73,7 @@ def main() -> None:
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config.setdefault("spawn", {})["session_cookie"] = combined
-    # Stale explicit tokens would otherwise win over the fresh cookie.
+    # otherwise a stale token left in the config wins over the fresh cookie
     config["spawn"]["access_token"] = ""
     config["spawn"]["refresh_token"] = ""
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")

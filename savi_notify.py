@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-savi-discord-notifier - mirror your spawn.co notifications into Discord.
+Posts your spawn.co notifications to a Discord webhook.
 
-Spawn already builds the notifications we want ("savi finished building in
-MONSTER O'CLOCK"). This just forwards them, so you can close the app.
+Savi keeps building after you close the app, which is the whole point, except
+there's then no way to find out she's done without opening it again. Spawn
+already writes a notification when she finishes, so this polls for those and
+forwards them.
 
-Unofficial. Not affiliated with, endorsed by, or supported by Spawn.
-It reads a private backend, so it can break whenever they ship a change.
+Nothing official about this. It reads an endpoint nobody documented, so it
+will break eventually. There's a table in the README for when it does.
 
-Standard library only. Python 3.9+. No pip install needed.
+Stdlib only, Python 3.9+.
 """
 
 from __future__ import annotations
@@ -31,35 +33,34 @@ HERE = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("SAVI_CONFIG") or HERE / "config.json")
 STATE_PATH = Path(os.environ.get("SAVI_STATE") or HERE / "state.json")
 
-USER_AGENT = "savi-discord-notifier/0.2 (+https://github.com/YOU/savi-discord-notifier)"
+USER_AGENT = "savi-discord-notifier/0.3 (+https://github.com/fcxhx3/savi-discord-notifier)"
 
 DEFAULT_BASE_URL = "https://kiln.spawn.co"
 DEFAULT_WEB_URL = "https://www.spawn.co"
 
-# Spawn's notifications table carries the human sentence in `message`, and the
-# thing you actually want to filter on in `kind` ("savi_finished"). Note that
-# `type` is *not* it - that's the UI action ("redirect") and is the same for
-# nearly everything.
+# The sentence you want is in `message`, and what it's about is in `kind`.
+# Don't reach for `type` there - it says "redirect" on nearly every row and
+# tells you nothing. Took me an embarrassingly long time to spot that.
 DEFAULT_TEXT_FIELD = "message"
 DEFAULT_TYPE_FIELD = "kind"
 DEFAULT_URL_FIELD = "action_data"
 
-# "plain" reads like a person typed it; "embed" is the boxed card.
+# plain = a single line, embed = the boxed card with the coloured bar
 DEFAULT_STYLE = "plain"
 DEFAULT_LINK_LABEL = "Open in Spawn"
 
-# Fallbacks if the schema shifts under us.
+# only get used if they rename the column on us
 TEXT_GUESSES = ("message", "title", "body", "text", "description", "content")
 
 log = logging.getLogger("savi")
 
 
 class AuthExpired(Exception):
-    """Access token is dead and we could not refresh it."""
+    """Token expired and refreshing it didn't work either."""
 
 
 class TransientError(Exception):
-    """Something went wrong that is probably worth retrying."""
+    """Went wrong, but probably worth another go in a minute."""
 
 
 # --------------------------------------------------------------------------
@@ -106,7 +107,7 @@ def save_state(state: dict) -> None:
     tmp = STATE_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
     tmp.replace(STATE_PATH)
-    # The rotated refresh token lives in here.
+    # the refresh token ends up in here, so keep it to ourselves
     try:
         os.chmod(STATE_PATH, 0o600)
     except OSError:
@@ -138,22 +139,23 @@ def dig(obj: Any, path: str, default: Any = None) -> Any:
 
 def parse_session_cookie(raw: str) -> tuple:
     """
-    Pull (access_token, refresh_token) out of a Supabase auth cookie.
+    Dig (access_token, refresh_token) out of the Supabase auth cookie.
 
-    Spawn uses @supabase/ssr, which keeps the session in a cookie rather than
-    local storage. Those cookies are URL-encoded, usually prefixed 'base64-',
-    and split into numbered chunks when they outgrow the 4KB cookie limit.
-    Users paste the raw value(s) and we deal with the wrapping here.
+    Spawn uses @supabase/ssr, so the session lives in a cookie and not in
+    local storage, which is not where I went looking first. The value is
+    URL-encoded, usually carries a 'base64-' prefix, and gets split into
+    .0 / .1 chunks once it outgrows the 4KB cookie limit. You paste it in
+    raw and this untangles it.
     """
     if not raw:
         return "", ""
 
-    # Chunks get pasted one after another, often with a stray newline between
-    # them. Cookie values can't contain whitespace anyway, so drop all of it.
+    # people paste the chunks back to back and usually catch a newline in
+    # between. cookie values can't hold whitespace anyway, so strip the lot
     value = "".join(raw.split()).strip('"')
     value = urllib.parse.unquote(value)
 
-    # Chunked cookies are just concatenated; strip a prefix on each piece.
+    # the chunks are just glued together, so lose any repeated prefix
     if value.count("base64-") > 1:
         value = "".join(part for part in value.split("base64-") if part)
         value = "base64-" + value
@@ -216,11 +218,11 @@ def http_json(url, *, headers, method="GET", body=None, timeout=20):
 
 class SpawnClient:
     """
-    Talks to Spawn's backend (a Supabase/PostgREST deployment at kiln.spawn.co).
+    Talks to kiln.spawn.co, which is a Supabase/PostgREST setup.
 
-    Access tokens are short lived, so we refresh them ourselves rather than
-    making you re-paste one every hour. Supabase rotates the refresh token on
-    each use, so the new one gets written back to state.json.
+    Access tokens only last about an hour. Rather than make you paste a fresh
+    one in that often, this renews them itself. Supabase hands back a new
+    refresh token every time it does, and that goes into state.json.
     """
 
     def __init__(self, spawn_cfg: dict, state: dict):
@@ -233,14 +235,14 @@ class SpawnClient:
         self.access_token = spawn_cfg.get("access_token", "")
         config_refresh = spawn_cfg.get("refresh_token", "")
 
-        # Easiest setup path: paste the raw sb-*-auth-token cookie and let us
-        # unwrap it, rather than making people decode base64 by hand.
+        # far easier to paste the raw sb-*-auth-token cookie and unpick it
+        # here than to talk someone through decoding base64 by hand
         if spawn_cfg.get("session_cookie"):
             cookie_access, cookie_refresh = parse_session_cookie(spawn_cfg["session_cookie"])
             self.access_token = self.access_token or cookie_access
             config_refresh = config_refresh or cookie_refresh
 
-        # A rotated token in state beats whatever was originally pasted in.
+        # whatever we rotated to last is newer than what's sat in the config
         self.refresh_token = state.get("refresh_token") or config_refresh
 
     # -- auth ------------------------------------------------------------
@@ -291,7 +293,7 @@ class SpawnClient:
             ("order", "created_at.desc,id.desc"),
             ("limit", str(limit)),
         ]
-        # Matches what the web app asks for; skips things you've archived.
+        # same query the site makes, minus anything you've archived
         if self.cfg.get("skip_archived", True):
             params.insert(2, ("status", "neq.archived"))
         query = urllib.parse.urlencode(params, safe=".*,")
@@ -318,7 +320,7 @@ class SpawnClient:
 # --------------------------------------------------------------------------
 
 def notification_text(row: dict, fields: dict) -> str:
-    """Best effort at a human sentence for this notification."""
+    """Get a readable sentence out of the row, one way or another."""
     configured = fields.get("text") or DEFAULT_TEXT_FIELD
     if configured:
         value = dig(row, configured)
@@ -330,7 +332,7 @@ def notification_text(row: dict, fields: dict) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
 
-    # Nothing obvious - show the payload rather than an empty message.
+    # nothing obvious in there, so show the payload rather than a blank line
     payload = row.get("data") or row.get("payload")
     if payload:
         return json.dumps(payload, ensure_ascii=False)[:300]
@@ -339,11 +341,11 @@ def notification_text(row: dict, fields: dict) -> str:
 
 
 def resolve_link(row: dict, fields: dict, cfg: dict) -> str:
-    """Absolute URL for this notification, or '' if there isn't one."""
+    """Full URL for this notification, or an empty string if there isn't one."""
     link = dig(row, fields.get("url") or DEFAULT_URL_FIELD) or dig(row, "data.url")
     if not isinstance(link, str) or not link:
         return ""
-    # action_data is a path like "/app/<uuid>?panel=chat", not a full URL.
+    # action_data is a path like "/app/<uuid>?panel=chat", not a whole URL
     if link.startswith("/"):
         link = cfg.get("web_base_url", DEFAULT_WEB_URL).rstrip("/") + link
     return link if link.startswith("http") else ""
@@ -372,18 +374,18 @@ def build_payload(row: dict, fields: dict, cfg: dict) -> dict:
             payload["content"] = mention
         return payload
 
-    # Plain style: one line, like a person typed it.
+    # plain style, which is just:
     #   [Open in Spawn](url) - savi finished building in MONSTER O'CLOCK
     label = cfg.get("link_label", DEFAULT_LINK_LABEL)
     content = f"[{label}]({link}) - {text}" if link else text
     if mention:
         content = f"{mention} {content}"
-    # SUPPRESS_EMBEDS, so a bare URL in the text can't sprout a preview card.
+    # SUPPRESS_EMBEDS, or a bare URL in the text sprouts a preview card
     return {"content": content, "flags": 4}
 
 
 def wanted(row: dict, spawn_cfg: dict) -> bool:
-    """Apply the include/exclude type filters, if the user set any."""
+    """Check a row against only_types / ignore_types, if either is set."""
     type_field = spawn_cfg.get("fields", {}).get("type") or DEFAULT_TYPE_FIELD
     kind = str(dig(row, type_field, "") or "").lower()
 
@@ -410,7 +412,7 @@ def check_once(client: SpawnClient, cfg: dict, state: dict, seed_only: bool = Fa
     seen_set = set(seen)
     sent = 0
 
-    # Server gives newest first; deliver oldest first so Discord reads in order.
+    # server sends newest first, so flip it and Discord reads top to bottom
     for row in reversed(rows):
         rid = row.get(fields.get("id", "id"))
         if rid is None:
@@ -429,7 +431,7 @@ def check_once(client: SpawnClient, cfg: dict, state: dict, seed_only: bool = Fa
         post_discord(cfg["discord_webhook_url"], build_payload(row, fields, cfg))
         sent += 1
 
-    # Keep the dedup list bounded; 500 is ten pages of history.
+    # don't let this grow forever. 500 is ten pages worth of history
     if len(seen) > 500:
         del seen[:-500]
 
@@ -519,8 +521,8 @@ def main() -> None:
 
     interval = int(cfg.get("poll_seconds", 60))
 
-    # First run: learn what's already in the feed instead of dumping your
-    # entire notification history into the channel at once.
+    # on a first run just note what's already sat there, or you get your
+    # entire notification history dumped into the channel in one go
     if "seen_ids" not in state and not cfg.get("notify_on_first_run", False):
         log.info("First run - recording existing notifications without sending them.")
         try:
@@ -556,7 +558,7 @@ def main() -> None:
             backoff = min(backoff + 1, 6)
             log.exception("Unexpected error")
 
-        # Jitter so we are not a perfectly predictable load on their servers.
+        # bit of jitter so we're not hitting them on a perfect metronome
         delay = interval * (2 ** backoff) if backoff else interval
         time.sleep(min(delay, 900) + random.uniform(0, 3))
 
