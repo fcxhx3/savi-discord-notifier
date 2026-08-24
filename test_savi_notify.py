@@ -68,7 +68,16 @@ class Base(unittest.TestCase):
             return sn.check_once(client, config, state, seed_only=seed_only)
 
     def texts(self):
-        return [p["embeds"][0]["description"] for p in self.posts]
+        """The human sentence from each post, whichever style was used."""
+        out = []
+        for p in self.posts:
+            if "embeds" in p:
+                out.append(p["embeds"][0]["description"])
+            else:
+                content = p["content"]
+                # Plain style prefixes "[label](url) - "; keep just the sentence.
+                out.append(content.split(") - ", 1)[1] if ") - " in content else content)
+        return out
 
 
 class ForwardingTests(Base):
@@ -153,26 +162,70 @@ class TextTests(unittest.TestCase):
         self.assertIn("KESSLER FLATS", out)
         self.assertNotEqual(out.strip(), "")
 
+class LinkTests(unittest.TestCase):
     def test_relative_action_data_becomes_absolute(self):
-        payload = sn.build_payload(note("a"), {}, {})
-        self.assertEqual(payload["embeds"][0]["url"],
-                         "https://www.spawn.co/app/6d2be786?panel=chat&notif_kind=savi_finished")
+        self.assertEqual(
+            sn.resolve_link(note("a"), {}, {}),
+            "https://www.spawn.co/app/6d2be786?panel=chat&notif_kind=savi_finished")
 
     def test_web_base_url_is_configurable(self):
-        payload = sn.build_payload(note("a"), {}, {"web_base_url": "https://staging.example/"})
-        self.assertTrue(payload["embeds"][0]["url"].startswith("https://staging.example/app/"))
+        link = sn.resolve_link(note("a"), {}, {"web_base_url": "https://staging.example/"})
+        self.assertTrue(link.startswith("https://staging.example/app/"))
 
     def test_absolute_link_is_left_alone(self):
         row = note("a", action_data="https://elsewhere.example/x")
-        payload = sn.build_payload(row, {}, {})
-        self.assertEqual(payload["embeds"][0]["url"], "https://elsewhere.example/x")
+        self.assertEqual(sn.resolve_link(row, {}, {}), "https://elsewhere.example/x")
+
+    def test_missing_link_is_empty(self):
+        self.assertEqual(sn.resolve_link(note("a", action_data=""), {}, {}), "")
+
+
+class PlainStyleTests(unittest.TestCase):
+    """The default: one line, the way a person would type it."""
+
+    def test_looks_like_a_typed_message(self):
+        payload = sn.build_payload(note("a", message="savi finished"), {}, {})
+        self.assertEqual(
+            payload["content"],
+            "[Open in Spawn](https://www.spawn.co/app/6d2be786"
+            "?panel=chat&notif_kind=savi_finished) - savi finished")
+
+    def test_no_embed_is_sent(self):
+        payload = sn.build_payload(note("a"), {}, {})
+        self.assertNotIn("embeds", payload)
+
+    def test_link_previews_are_suppressed(self):
+        self.assertEqual(sn.build_payload(note("a"), {}, {})["flags"], 4)
+
+    def test_without_a_link_it_is_just_the_sentence(self):
+        payload = sn.build_payload(note("a", message="savi finished", action_data=""), {}, {})
+        self.assertEqual(payload["content"], "savi finished")
+
+    def test_link_label_is_configurable(self):
+        payload = sn.build_payload(note("a"), {}, {"link_label": "open"})
+        self.assertTrue(payload["content"].startswith("[open](https://"))
+
+    def test_mention_goes_in_front(self):
+        payload = sn.build_payload(note("a"), {}, {"mention": "<@123>"})
+        self.assertTrue(payload["content"].startswith("<@123> ["))
+
+
+class EmbedStyleTests(unittest.TestCase):
+    EMBED = {"style": "embed"}
+
+    def test_embed_carries_link_and_footer(self):
+        payload = sn.build_payload(note("a"), {}, self.EMBED)
+        embed = payload["embeds"][0]
+        self.assertEqual(embed["title"], "Open in Spawn")
+        self.assertTrue(embed["url"].startswith("https://www.spawn.co/app/"))
+        self.assertEqual(embed["footer"]["text"], "savi_finished")
 
     def test_footer_shows_kind_not_type(self):
-        payload = sn.build_payload(note("a"), {}, {})
+        payload = sn.build_payload(note("a"), {}, self.EMBED)
         self.assertEqual(payload["embeds"][0]["footer"]["text"], "savi_finished")
 
     def test_mention_is_added_when_configured(self):
-        payload = sn.build_payload(note("a"), {}, {"mention": "<@123>"})
+        payload = sn.build_payload(note("a"), {}, dict(self.EMBED, mention="<@123>"))
         self.assertEqual(payload["content"], "<@123>")
 
 

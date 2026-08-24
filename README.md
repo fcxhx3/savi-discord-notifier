@@ -111,6 +111,21 @@ Then keep only what you want, in `config.json`:
 
 Both *"savi finished building in X"* and *"savi built most of X — a couple pieces want your eye"* share `kind: savi_finished`, so you can't split them by kind. Both mean Savi has stopped and wants you, which is usually what you want to hear about anyway.
 
+### Message style
+
+Two looks, set with `style` in `config.json`:
+
+```jsonc
+"style": "plain"   // default - one line, like a person typed it
+"style": "embed"   // a boxed card with a coloured bar and a footer
+```
+
+Plain comes out as:
+
+> [Open in Spawn](#) - savi finished building in MONSTER O'CLOCK — come see
+
+The link label is `link_label`, and `mention` (e.g. `"<@your-user-id>"`) prefixes the message if you want a ping rather than a quiet post.
+
 To see how a real message will look in Discord:
 
 ```bash

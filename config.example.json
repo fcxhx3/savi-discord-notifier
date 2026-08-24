@@ -4,6 +4,9 @@
   "poll_seconds": 60,
   "notify_on_first_run": false,
 
+  "style": "plain",
+  "link_label": "Open in Spawn",
+  "web_base_url": "https://www.spawn.co",
   "mention": "",
 
   "spawn": {
@@ -13,10 +16,12 @@
 
     "apikey": "PASTE_THE_APIKEY_HEADER_HERE",
 
-    "access_token": "PASTE_ACCESS_TOKEN_HERE",
-    "refresh_token": "PASTE_REFRESH_TOKEN_HERE",
+    "session_cookie": "RUN_setup_session.py_INSTEAD_OF_EDITING_THIS_BY_HAND",
 
-    "only_types": [],
+    "access_token": "",
+    "refresh_token": "",
+
+    "only_types": ["savi_finished"],
     "ignore_types": [],
 
     "table": "notifications",
@@ -25,9 +30,9 @@
 
     "fields": {
       "id": "id",
-      "type": "type",
-      "text": "",
-      "url": "url"
+      "type": "kind",
+      "text": "message",
+      "url": "action_data"
     }
   }
 }

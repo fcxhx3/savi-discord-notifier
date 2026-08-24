@@ -44,6 +44,10 @@ DEFAULT_TEXT_FIELD = "message"
 DEFAULT_TYPE_FIELD = "kind"
 DEFAULT_URL_FIELD = "action_data"
 
+# "plain" reads like a person typed it; "embed" is the boxed card.
+DEFAULT_STYLE = "plain"
+DEFAULT_LINK_LABEL = "Open in Spawn"
+
 # Fallbacks if the schema shifts under us.
 TEXT_GUESSES = ("message", "title", "body", "text", "description", "content")
 
@@ -334,31 +338,48 @@ def notification_text(row: dict, fields: dict) -> str:
                        if k not in ("id", "user_id")}, ensure_ascii=False)[:300]
 
 
+def resolve_link(row: dict, fields: dict, cfg: dict) -> str:
+    """Absolute URL for this notification, or '' if there isn't one."""
+    link = dig(row, fields.get("url") or DEFAULT_URL_FIELD) or dig(row, "data.url")
+    if not isinstance(link, str) or not link:
+        return ""
+    # action_data is a path like "/app/<uuid>?panel=chat", not a full URL.
+    if link.startswith("/"):
+        link = cfg.get("web_base_url", DEFAULT_WEB_URL).rstrip("/") + link
+    return link if link.startswith("http") else ""
+
+
 def build_payload(row: dict, fields: dict, cfg: dict) -> dict:
     text = notification_text(row, fields)
-    kind = str(dig(row, fields.get("type") or DEFAULT_TYPE_FIELD, "") or "")
+    link = resolve_link(row, fields, cfg)
+    mention = str(cfg.get("mention") or "").strip()
 
-    embed = {
-        "description": text,
-        "color": 0xF97316,  # Savi's flame orange
-        "timestamp": row.get("created_at"),
-    }
-    if kind:
-        embed["footer"] = {"text": kind}
-
-    link = dig(row, fields.get("url") or DEFAULT_URL_FIELD) or dig(row, "data.url")
-    if isinstance(link, str) and link:
-        # action_data is a path like "/app/<uuid>?panel=chat", not a full URL.
-        if link.startswith("/"):
-            link = cfg.get("web_base_url", DEFAULT_WEB_URL).rstrip("/") + link
-        if link.startswith("http"):
+    if str(cfg.get("style") or DEFAULT_STYLE).lower() == "embed":
+        embed = {
+            "description": text,
+            "color": 0xF97316,  # Savi's flame orange
+            "timestamp": row.get("created_at"),
+        }
+        kind = str(dig(row, fields.get("type") or DEFAULT_TYPE_FIELD, "") or "")
+        if kind:
+            embed["footer"] = {"text": kind}
+        if link:
             embed["url"] = link
-            embed["title"] = "Open in Spawn"
+            embed["title"] = cfg.get("link_label", DEFAULT_LINK_LABEL)
 
-    payload = {"embeds": [embed]}
-    if cfg.get("mention"):
-        payload["content"] = cfg["mention"]
-    return payload
+        payload = {"embeds": [embed]}
+        if mention:
+            payload["content"] = mention
+        return payload
+
+    # Plain style: one line, like a person typed it.
+    #   [Open in Spawn](url) - savi finished building in MONSTER O'CLOCK
+    label = cfg.get("link_label", DEFAULT_LINK_LABEL)
+    content = f"[{label}]({link}) - {text}" if link else text
+    if mention:
+        content = f"{mention} {content}"
+    # SUPPRESS_EMBEDS, so a bare URL in the text can't sprout a preview card.
+    return {"content": content, "flags": 4}
 
 
 def wanted(row: dict, spawn_cfg: dict) -> bool:
