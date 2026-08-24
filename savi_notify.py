@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("SAVI_CONFIG") or HERE / "config.json")
 STATE_PATH = Path(os.environ.get("SAVI_STATE") or HERE / "state.json")
 
-USER_AGENT = "savi-discord-notifier/0.3 (+https://github.com/fcxhx3/savi-discord-notifier)"
+USER_AGENT = "savi-discord-notifier/0.1.0 (+https://github.com/fcxhx3/savi-discord-notifier)"
 
 DEFAULT_BASE_URL = "https://kiln.spawn.co"
 DEFAULT_WEB_URL = "https://www.spawn.co"
