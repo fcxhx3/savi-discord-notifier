@@ -2,7 +2,9 @@
 
 Pings a Discord channel when Savi finishes building something on [spawn.co](https://www.spawn.co), so you can close the app and go do something else.
 
-**This is unofficial.** I don't work for Spawn and they haven't blessed it. It reads an endpoint that nobody documented, which means it can stop working any time they push an update. There's a [troubleshooting table](#when-it-breaks) for when that happens.
+**This is unofficial.** I don't work for Spawn and it isn't affiliated with them. It reads an endpoint that nobody documented, which means it can stop working any time they push an update. There's a [troubleshooting table](#when-it-breaks) for when that happens.
+
+**Before you start:** setting this up puts a working login to your Spawn account into `config.json` on your machine. Please read [your config is a password file](#your-config-is-a-password-file) before you go anywhere near a `git commit`.
 
 ## Why
 
@@ -68,7 +70,7 @@ python setup_session.py
 
 Paste chunk `.0`, press enter, paste `.1`, press enter, then enter again on the blank line. It glues them together, checks they decode, and writes them in. It only prints masked values and doesn't send anything anywhere.
 
-`config.json` is gitignored, and you should keep it that way. The apikey is harmless but the session cookie is a live login to your account.
+You've now got a live login to your Spawn account sitting in `config.json`. It ships gitignored and you should leave it that way. See [below](#your-config-is-a-password-file) for what that actually means.
 
 ### 4. Check it works
 
@@ -160,6 +162,26 @@ Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object { $_.C
 ```
 
 On macOS or Linux you'd want a launchd plist or a systemd user unit. I haven't written those, PRs welcome.
+
+## Your config is a password file
+
+Worth being blunt about this, because it's the one way using this tool can actually hurt you.
+
+Once you've run `setup_session.py`, your `config.json` contains a working login to your Spawn account. Not a settings file with an API key in it. A login. Anyone who gets hold of it can sign in as you, see your projects, and act as you, without needing your password and without touching your email.
+
+`state.json` is the same. The token gets renewed as it runs and the fresh one is written there, so it is every bit as sensitive as the config.
+
+So:
+
+- **Don't commit either of them.** Both are in `.gitignore` already. If you fork this, restructure it, or copy the files somewhere else, check they're still ignored. `savi_notify.py` shouts at you on startup if it spots either one tracked in git, but don't lean on that.
+- **Don't paste them anywhere.** Not in an issue, not in Discord asking for help, not in a screenshot. If you need help, the error message is almost always enough on its own.
+- **Careful with `--dump` output too.** It doesn't have your tokens in it, but it does carry your `user_id` and the names of your projects in every row.
+
+One thing that is genuinely fine: the `apikey`. That's Supabase's public anon key. It's shipped in the website's own JavaScript, everyone using Spawn has the same one, and on its own it does nothing. It's the session cookie and the tokens that matter.
+
+**If one does get out:** sign out of Spawn, which invalidates the refresh token and makes the leaked copy useless. Then run `setup_session.py` again with a fresh cookie. Do that first and worry about tidying up the git history afterwards, since the token is the part that's actually dangerous while it's still valid.
+
+Your Discord webhook URL lives in there as well. That one's less serious, but anyone holding it can post into your channel, so if it leaks just delete the webhook in Discord and make a new one.
 
 ## How it works
 

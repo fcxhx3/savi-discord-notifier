@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import random
+import subprocess
 import sys
 import time
 import urllib.error
@@ -91,6 +92,37 @@ def load_config() -> dict:
             "or an access_token / refresh_token pair"
         )
     return cfg
+
+
+def warn_if_tracked() -> list:
+    """
+    Shout if config.json or state.json has ended up in git.
+
+    Both hold a live login to your Spawn account. Committing one is the kind
+    of mistake you only make once, and it's a lot easier to catch here than
+    after it's been pushed somewhere public.
+    """
+    if not (HERE / ".git").exists():
+        return []
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(HERE), "ls-files", "--", CONFIG_PATH.name, STATE_PATH.name],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []          # no git, or it took too long. not worth caring about
+
+    tracked = [line.strip() for line in done.stdout.splitlines() if line.strip()]
+    if tracked:
+        names = " ".join(tracked)
+        log.warning("=" * 68)
+        log.warning("%s is tracked by git.", names)
+        log.warning("That file holds a live login to your Spawn account. Get it out")
+        log.warning("before you push anywhere:")
+        log.warning("    git rm --cached %s", names)
+        log.warning("and check it is listed in .gitignore.")
+        log.warning("=" * 68)
+    return tracked
 
 
 def load_state() -> dict:
@@ -475,6 +507,7 @@ def main() -> None:
     )
 
     cfg = load_config()
+    warn_if_tracked()
 
     if args.test_discord:
         post_discord(cfg["discord_webhook_url"], {

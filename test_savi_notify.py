@@ -346,6 +346,50 @@ class SessionCookieTests(unittest.TestCase):
         self.assertEqual(client.refresh_token, "rt-newer")
 
 
+class TrackedFileWarningTests(unittest.TestCase):
+    """Committing config.json is the one mistake that really costs you."""
+
+    def fake_git(self, stdout):
+        return mock.patch.object(
+            sn.subprocess, "run",
+            return_value=mock.Mock(stdout=stdout, returncode=0))
+
+    def test_warns_when_config_is_tracked(self):
+        with mock.patch.object(sn.Path, "exists", return_value=True), \
+             self.fake_git("config.json\n"), \
+             self.assertLogs(sn.log, "WARNING") as logs:
+            tracked = sn.warn_if_tracked()
+        self.assertEqual(tracked, ["config.json"])
+        joined = " ".join(logs.output)
+        self.assertIn("git rm --cached", joined)
+        self.assertIn("live login", joined)
+
+    def test_catches_state_json_too(self):
+        with mock.patch.object(sn.Path, "exists", return_value=True), \
+             self.fake_git("config.json\nstate.json\n"), \
+             self.assertLogs(sn.log, "WARNING"):
+            tracked = sn.warn_if_tracked()
+        self.assertEqual(tracked, ["config.json", "state.json"])
+
+    def test_quiet_when_nothing_is_tracked(self):
+        with mock.patch.object(sn.Path, "exists", return_value=True), \
+             self.fake_git("\n"):
+            self.assertEqual(sn.warn_if_tracked(), [])
+
+    def test_skips_when_not_a_repo(self):
+        with mock.patch.object(sn.Path, "exists", return_value=False):
+            self.assertEqual(sn.warn_if_tracked(), [])
+
+    def test_survives_git_being_missing(self):
+        with mock.patch.object(sn.Path, "exists", return_value=True), \
+             mock.patch.object(sn.subprocess, "run", side_effect=OSError("no git")):
+            self.assertEqual(sn.warn_if_tracked(), [])
+
+    def test_this_repo_is_actually_clean(self):
+        """Not a mock. If someone commits the real config, this fails."""
+        self.assertEqual(sn.warn_if_tracked(), [])
+
+
 class DigTests(unittest.TestCase):
     def test_dotted_paths(self):
         blob = {"data": {"items": [{"id": 1}, {"id": 2}]}}

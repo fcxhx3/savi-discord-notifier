@@ -88,6 +88,11 @@ def main() -> None:
     print()
     print(f"Written to {config_path}")
     print()
+    print("Treat that file like a password file from here on. What's now in it")
+    print("is a working login to your Spawn account, not just a settings blob.")
+    print("Don't commit it, don't paste it into an issue, don't screenshot it.")
+    print("If it does get out, sign out of Spawn everywhere to kill the token.")
+    print()
     print("Next:  python savi_notify.py --test-discord")
     print("Then:  python savi_notify.py --dump")
 
