@@ -127,11 +127,23 @@ If the text comes out wrong, check `--dump` for which column holds the sentence 
 powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
 ```
 
-Registers a Scheduled Task that starts at logon and runs silently via `pythonw.exe` — no console window, no tray icon.
+Either way it runs via `pythonw.exe` — no console window, no tray icon — and starts immediately so you don't have to log out.
+
+It tries two methods in order:
+
+1. **A Scheduled Task**, which also restarts the script if it ever dies. Registering one usually needs admin.
+2. **A Startup-folder shortcut**, if the task is refused. No admin required.
+
+`Register-ScheduledTask : Access is denied` is expected on a standard account — the installer catches it and falls back on its own. Force one with `-Method task` or `-Method startup`.
 
 ```powershell
-Stop-ScheduledTask -TaskName SaviDiscordNotifier                            # pause
-powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall   # remove
+powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Uninstall   # remove either
+```
+
+Check it's actually running:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object { $_.CommandLine -like '*savi_notify*' }
 ```
 
 macOS/Linux: a `launchd` plist or systemd user unit does the same job. PRs welcome.
