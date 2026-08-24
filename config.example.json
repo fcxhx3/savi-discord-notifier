@@ -1,0 +1,22 @@
+{
+  "discord_webhook_url": "https://discord.com/api/webhooks/XXXXXXXX/YYYYYYYY",
+
+  "poll_seconds": 60,
+  "notify_on_first_run": false,
+
+  "spawn": {
+    "tasks_url": "https://www.spawn.co/api/REPLACE_ME",
+    "method": "GET",
+
+    "cookie": "PASTE_YOUR_COOKIE_HEADER_HERE",
+
+    "tasks_path": "",
+
+    "fields": {
+      "id": "id",
+      "status": "status",
+      "title": "title",
+      "url": "url"
+    }
+  }
+}

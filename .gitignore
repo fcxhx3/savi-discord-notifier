@@ -1,0 +1,16 @@
+# Your real config holds a session token and a webhook URL. Never commit it.
+config.json
+state.json
+state.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
