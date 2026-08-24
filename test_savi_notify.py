@@ -31,10 +31,18 @@ def cfg(**overrides):
     return base
 
 
-def note(nid, title="savi finished building in KESSLER FLATS", kind="savi_done",
+def note(nid, message="savi finished building in KESSLER FLATS", kind="savi_finished",
          created="2026-08-24T19:00:00Z", **extra):
-    row = {"id": nid, "user_id": "u-1", "title": title, "type": kind,
-           "status": "delivered", "created_at": created}
+    """Shaped like a real row from Spawn's notifications table.
+
+    Note `type` is "redirect" on essentially every row - `kind` is the field
+    that actually says what happened.
+    """
+    row = {"id": nid, "user_id": "u-1", "message": message,
+           "kind": kind, "type": "redirect", "status": "read",
+           "created_at": created,
+           "action_data": "/app/6d2be786?panel=chat&notif_kind=savi_finished",
+           "related_game_id": "6d2be786"}
     row.update(extra)
     return row
 
@@ -84,8 +92,8 @@ class ForwardingTests(Base):
     def test_delivered_oldest_first(self):
         # Server returns newest first; Discord should read chronologically.
         state = {"seen_ids": []}
-        rows = [note("new", title="third"), note("mid", title="second"),
-                note("old", title="first")]
+        rows = [note("new", message="third"), note("mid", message="second"),
+                note("old", message="first")]
         self.poll(rows, state)
         self.assertEqual(self.texts(), ["first", "second", "third"])
 
@@ -107,24 +115,24 @@ class ForwardingTests(Base):
 
 class FilterTests(Base):
     def test_only_types_keeps_just_those(self):
-        c = cfg(spawn={"only_types": ["savi_done"]})
+        c = cfg(spawn={"only_types": ["savi_finished"]})
         state = {"seen_ids": []}
-        self.poll([note("a", kind="savi_done", title="savi finished"),
-                   note("b", kind="new_follower", title="someone followed you")],
+        self.poll([note("a", kind="savi_finished", message="savi finished"),
+                   note("b", kind="new_follower", message="someone followed you")],
                   state, config=c)
         self.assertEqual(self.texts(), ["savi finished"])
 
     def test_ignore_types_drops_those(self):
         c = cfg(spawn={"ignore_types": ["new_follower"]})
         state = {"seen_ids": []}
-        self.poll([note("a", kind="savi_done", title="savi finished"),
-                   note("b", kind="new_follower", title="someone followed you")],
+        self.poll([note("a", kind="savi_finished", message="savi finished"),
+                   note("b", kind="new_follower", message="someone followed you")],
                   state, config=c)
         self.assertEqual(self.texts(), ["savi finished"])
 
     def test_filtered_rows_are_still_marked_seen(self):
         """Otherwise they'd be re-evaluated forever."""
-        c = cfg(spawn={"only_types": ["savi_done"]})
+        c = cfg(spawn={"only_types": ["savi_finished"]})
         state = {"seen_ids": []}
         self.poll([note("b", kind="new_follower")], state, config=c)
         self.assertIn("b", state["seen_ids"])
@@ -145,10 +153,23 @@ class TextTests(unittest.TestCase):
         self.assertIn("KESSLER FLATS", out)
         self.assertNotEqual(out.strip(), "")
 
-    def test_link_becomes_clickable(self):
-        row = note("a", url="https://www.spawn.co/p/abc")
+    def test_relative_action_data_becomes_absolute(self):
+        payload = sn.build_payload(note("a"), {}, {})
+        self.assertEqual(payload["embeds"][0]["url"],
+                         "https://www.spawn.co/app/6d2be786?panel=chat&notif_kind=savi_finished")
+
+    def test_web_base_url_is_configurable(self):
+        payload = sn.build_payload(note("a"), {}, {"web_base_url": "https://staging.example/"})
+        self.assertTrue(payload["embeds"][0]["url"].startswith("https://staging.example/app/"))
+
+    def test_absolute_link_is_left_alone(self):
+        row = note("a", action_data="https://elsewhere.example/x")
         payload = sn.build_payload(row, {}, {})
-        self.assertEqual(payload["embeds"][0]["url"], "https://www.spawn.co/p/abc")
+        self.assertEqual(payload["embeds"][0]["url"], "https://elsewhere.example/x")
+
+    def test_footer_shows_kind_not_type(self):
+        payload = sn.build_payload(note("a"), {}, {})
+        self.assertEqual(payload["embeds"][0]["footer"]["text"], "savi_finished")
 
     def test_mention_is_added_when_configured(self):
         payload = sn.build_payload(note("a"), {}, {"mention": "<@123>"})

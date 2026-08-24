@@ -103,11 +103,23 @@ python savi_notify.py --types
 Then keep only what you want, in `config.json`:
 
 ```jsonc
-"only_types": ["savi_done"],     // allowlist - only these
-"ignore_types": ["new_follower"] // or blocklist - everything but these
+"only_types": ["savi_finished"],  // allowlist - only these
+"ignore_types": ["new_follower"]  // or blocklist - everything but these
 ```
 
-If the Discord messages come out looking wrong, check `--dump` for which column holds the sentence and point `fields.text` at it (dotted paths work, e.g. `"data.headline"`). Left empty, the script tries `title`, `body`, `message`, `text`, `description`, `content` in that order.
+> **Filter on `kind`, not `type`.** A row carries both. `type` is the UI action — it's `"redirect"` on essentially everything and tells you nothing. `kind` is what actually happened (`savi_finished`). The defaults already point at `kind`; this is only a trap if you go changing `fields.type` by hand.
+
+Both *"savi finished building in X"* and *"savi built most of X — a couple pieces want your eye"* share `kind: savi_finished`, so you can't split them by kind. Both mean Savi has stopped and wants you, which is usually what you want to hear about anyway.
+
+To see how a real message will look in Discord:
+
+```bash
+python savi_notify.py --preview
+```
+
+That sends your most recent notification and leaves `state.json` alone, so it won't affect what you get later.
+
+If the text comes out wrong, check `--dump` for which column holds the sentence and point `fields.text` at it (dotted paths work, e.g. `"data.headline"`). On Spawn it's `message`.
 
 ### 6. Run it in the background
 

@@ -34,9 +34,18 @@ STATE_PATH = Path(os.environ.get("SAVI_STATE") or HERE / "state.json")
 USER_AGENT = "savi-discord-notifier/0.2 (+https://github.com/YOU/savi-discord-notifier)"
 
 DEFAULT_BASE_URL = "https://kiln.spawn.co"
+DEFAULT_WEB_URL = "https://www.spawn.co"
 
-# Column names we'll try for the message text if config doesn't say.
-TEXT_GUESSES = ("title", "body", "message", "text", "description", "content")
+# Spawn's notifications table carries the human sentence in `message`, and the
+# thing you actually want to filter on in `kind` ("savi_finished"). Note that
+# `type` is *not* it - that's the UI action ("redirect") and is the same for
+# nearly everything.
+DEFAULT_TEXT_FIELD = "message"
+DEFAULT_TYPE_FIELD = "kind"
+DEFAULT_URL_FIELD = "action_data"
+
+# Fallbacks if the schema shifts under us.
+TEXT_GUESSES = ("message", "title", "body", "text", "description", "content")
 
 log = logging.getLogger("savi")
 
@@ -306,7 +315,7 @@ class SpawnClient:
 
 def notification_text(row: dict, fields: dict) -> str:
     """Best effort at a human sentence for this notification."""
-    configured = fields.get("text")
+    configured = fields.get("text") or DEFAULT_TEXT_FIELD
     if configured:
         value = dig(row, configured)
         if value:
@@ -327,7 +336,7 @@ def notification_text(row: dict, fields: dict) -> str:
 
 def build_payload(row: dict, fields: dict, cfg: dict) -> dict:
     text = notification_text(row, fields)
-    kind = str(row.get(fields.get("type", "type"), "") or "")
+    kind = str(dig(row, fields.get("type") or DEFAULT_TYPE_FIELD, "") or "")
 
     embed = {
         "description": text,
@@ -337,10 +346,14 @@ def build_payload(row: dict, fields: dict, cfg: dict) -> dict:
     if kind:
         embed["footer"] = {"text": kind}
 
-    link = dig(row, fields.get("url", "url")) or dig(row, "data.url")
-    if isinstance(link, str) and link.startswith("http"):
-        embed["url"] = link
-        embed["title"] = "Open in Spawn"
+    link = dig(row, fields.get("url") or DEFAULT_URL_FIELD) or dig(row, "data.url")
+    if isinstance(link, str) and link:
+        # action_data is a path like "/app/<uuid>?panel=chat", not a full URL.
+        if link.startswith("/"):
+            link = cfg.get("web_base_url", DEFAULT_WEB_URL).rstrip("/") + link
+        if link.startswith("http"):
+            embed["url"] = link
+            embed["title"] = "Open in Spawn"
 
     payload = {"embeds": [embed]}
     if cfg.get("mention"):
@@ -350,7 +363,7 @@ def build_payload(row: dict, fields: dict, cfg: dict) -> dict:
 
 def wanted(row: dict, spawn_cfg: dict) -> bool:
     """Apply the include/exclude type filters, if the user set any."""
-    type_field = spawn_cfg.get("fields", {}).get("type", "type")
+    type_field = spawn_cfg.get("fields", {}).get("type") or DEFAULT_TYPE_FIELD
     kind = str(dig(row, type_field, "") or "").lower()
 
     include = [t.lower() for t in spawn_cfg.get("only_types", []) if t]
@@ -426,6 +439,9 @@ def main() -> None:
                     help="print your latest notifications as raw JSON and exit")
     ap.add_argument("--types", action="store_true",
                     help="list the notification types in your feed, for filtering")
+    ap.add_argument("--preview", action="store_true",
+                    help="send your most recent notification to Discord to check "
+                         "formatting; does not affect what gets sent later")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -457,15 +473,27 @@ def main() -> None:
         log.info("Got %d notification(s).", len(rows))
         return
 
+    if args.preview:
+        rows = client.fetch_notifications()
+        if not rows:
+            log.info("No notifications to preview.")
+            return
+        post_discord(cfg["discord_webhook_url"],
+                     build_payload(rows[0], cfg["spawn"].get("fields", {}), cfg))
+        log.info("Sent your most recent notification as a preview. "
+                 "state.json untouched, so this won't affect real notifications.")
+        return
+
     if args.types:
         rows = client.fetch_notifications()
+        field = cfg["spawn"].get("fields", {}).get("type") or DEFAULT_TYPE_FIELD
         counts: dict = {}
         for row in rows:
-            counts[str(row.get("type", "(no type field)"))] = \
-                counts.get(str(row.get("type", "(no type field)")), 0) + 1
+            counts[str(dig(row, field, "(missing)"))] = \
+                counts.get(str(dig(row, field, "(missing)")), 0) + 1
         for kind, n in sorted(counts.items(), key=lambda kv: -kv[1]):
             print(f"{n:4d}  {kind}")
-        log.info("Put the ones you want in spawn.only_types in config.json.")
+        log.info("Counted by '%s'. Put the ones you want in spawn.only_types.", field)
         return
 
     interval = int(cfg.get("poll_seconds", 60))
